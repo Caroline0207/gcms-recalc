@@ -4,12 +4,10 @@ import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 
-# =========================
-# Page config
-# =========================
 st.set_page_config(page_title="GC-MS Data Cleaning", layout="wide")
 
 REQUIRED_COLS = ["Peak", "RT", "Area", "Height", "Name", "Formula", "Species", "Score"]
+EMPTY_TOKENS = {"nan": "", "None": "", "none": "", "—": "", "-": ""}
 
 st.title("GC-MS Data Cleaning 🫧")
 
@@ -20,13 +18,11 @@ with st.sidebar:
 
 st.caption(
     "Paste an Excel table (tab-separated) below. "
-    "The app calculates Area sums, excludes Air/Si/No-data peaks, "
-    "recalculates area percentages, and validates that Recalc % sums to 100."
+    "The app will calculate Area sums, exclude Air/Si/No-data peaks, "
+    "recalculate area percentages, and validate that Recalc % sums to 100."
 )
 
-# =========================
-# UI inputs
-# =========================
+# ---------- UI ----------
 calc = st.button("Calculate", type="primary")
 
 raw = st.text_area(
@@ -35,96 +31,7 @@ raw = st.text_area(
     placeholder="Paste tab-separated data copied directly from Excel…",
 )
 
-# =========================
-# Helpers
-# =========================
-def _coerce_number(series: pd.Series) -> pd.Series:
-    s = series.astype(str).str.replace(",", "", regex=False).str.strip()
-    s = s.replace({"": np.nan, "None": np.nan, "nan": np.nan})
-    return pd.to_numeric(s, errors="coerce")
-
-def parse_tsv(text: str) -> pd.DataFrame:
-    if not text or not text.strip():
-        raise ValueError("Input is empty. Please paste a table copied from Excel.")
-
-    df = pd.read_csv(io.StringIO(text.strip()), sep="\t", dtype=str, engine="python")
-    df.columns = [c.strip() for c in df.columns]
-
-    missing = [c for c in REQUIRED_COLS if c not in df.columns]
-    if missing:
-        raise ValueError(
-            f"Missing required columns: {missing}\n"
-            f"Detected columns: {list(df.columns)}"
-        )
-
-    for c in df.columns:
-        df[c] = df[c].astype(str).replace("nan", "").str.strip()
-
-    df["Peak"] = _coerce_number(df["Peak"]).astype("Int64")
-    df["RT"] = _coerce_number(df["RT"])
-    df["Area"] = _coerce_number(df["Area"])
-    df["Height"] = _coerce_number(df["Height"])
-    df["Score"] = _coerce_number(df["Score"])
-
-    return df
-
-def classify_rows(df: pd.DataFrame) -> pd.DataFrame:
-    out = df.copy()
-    formula = out["Formula"].fillna("").astype(str).str.strip()
-    peak = out["Peak"]
-
-    category = pd.Series(["Relevant"] * len(out), index=out.index)
-
-    air_mask = peak == 1
-    si_mask = (~air_mask) & formula.str.contains("si", case=False, na=False)
-    nodata_mask = (~air_mask) & (~si_mask) & (formula == "")
-
-    category.loc[nodata_mask] = "No data"
-    category.loc[si_mask] = "Si peak"
-    category.loc[air_mask] = "Air peak"
-
-    out["Category"] = category
-    return out
-
-def compute(df: pd.DataFrame):
-    df = classify_rows(df)
-
-    area_sum = df["Area"].sum(skipna=True)
-    air_sum = df.loc[df["Category"] == "Air peak", "Area"].sum(skipna=True)
-    si_sum = df.loc[df["Category"] == "Si peak", "Area"].sum(skipna=True)
-    nodata_sum = df.loc[df["Category"] == "No data", "Area"].sum(skipna=True)
-
-    recalc_sum = area_sum - (air_sum + si_sum + nodata_sum)
-
-    df["Area %"] = np.nan
-    if area_sum > 0:
-        df["Area %"] = (df["Area"] / area_sum) * 100
-
-    df["Recalc %"] = np.nan
-    if recalc_sum > 0:
-        rel = df["Category"] == "Relevant"
-        df.loc[rel, "Recalc %"] = (df.loc[rel, "Area"] / recalc_sum) * 100
-        recalc_total = df.loc[rel, "Recalc %"].sum(skipna=True)
-        diff_100 = recalc_total - 100
-    else:
-        recalc_total = np.nan
-        diff_100 = np.nan
-
-    summary = {
-        "Area sum": area_sum,
-        "Air peak sum": air_sum,
-        "Si peak sum": si_sum,
-        "No data sum": nodata_sum,
-        "Recalc sum": recalc_sum,
-        "Recalc % total": recalc_total,
-        "Difference from 100%": diff_100,
-    }
-
-    return df, summary
-
-# =========================
-# Copy helper (JS clipboard)
-# =========================
+# ---------- Clipboard copy button ----------
 def copy_to_clipboard_button(text: str, label: str = "🗒️ Copy"):
     safe_text = (
         text.replace("\\", "\\\\")
@@ -154,9 +61,103 @@ def copy_to_clipboard_button(text: str, label: str = "🗒️ Copy"):
     """
     components.html(html, height=90)
 
-# =========================
-# Main logic
-# =========================
+# ---------- Helpers ----------
+def _coerce_number(series: pd.Series) -> pd.Series:
+    s = series.astype(str).str.replace(",", "", regex=False).str.strip()
+    s = s.replace(EMPTY_TOKENS)
+    s = s.replace({"": np.nan})
+    return pd.to_numeric(s, errors="coerce")
+
+def parse_tsv(text: str) -> pd.DataFrame:
+    if not text or not text.strip():
+        raise ValueError("Input is empty. Please paste a table copied from Excel.")
+
+    df = pd.read_csv(io.StringIO(text.strip()), sep="\t", dtype=str, engine="python")
+    df.columns = [c.strip() for c in df.columns]
+
+    missing = [c for c in REQUIRED_COLS if c not in df.columns]
+    if missing:
+        raise ValueError(
+            f"Missing required columns: {missing}\n"
+            f"Detected columns: {list(df.columns)}"
+        )
+
+    # Normalize empty tokens for ALL columns
+    for c in df.columns:
+        df[c] = df[c].astype(str).str.strip().replace(EMPTY_TOKENS)
+
+    df["Peak"] = _coerce_number(df["Peak"]).astype("Int64")
+    df["RT"] = _coerce_number(df["RT"])
+    df["Area"] = _coerce_number(df["Area"])
+    df["Height"] = _coerce_number(df["Height"])
+    df["Score"] = _coerce_number(df["Score"])
+
+    return df
+
+def classify_rows(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+
+    peak = out["Peak"]
+
+    # Formula "empty" definition (your rule): empty string after cleanup
+    formula = out["Formula"].fillna("").astype(str).str.strip().replace(EMPTY_TOKENS)
+
+    category = pd.Series(["Relevant"] * len(out), index=out.index)
+
+    # Rule priority:
+    # 1) Peak 1 = Air peak (always)
+    air_mask = peak == 1
+
+    # 2) If Formula contains Si => Si peak (but not if it's air peak)
+    si_mask = (~air_mask) & formula.str.contains("si", case=False, na=False)
+
+    # 3) If Formula is empty => No data (but not if air or si)
+    nodata_mask = (~air_mask) & (~si_mask) & (formula == "")
+
+    category.loc[nodata_mask] = "No data"
+    category.loc[si_mask] = "Si peak"
+    category.loc[air_mask] = "Air peak"
+
+    out["Category"] = category
+    return out
+
+def compute(df: pd.DataFrame):
+    df = classify_rows(df)
+
+    area_sum = df["Area"].sum(skipna=True)
+    air_sum = df.loc[df["Category"] == "Air peak", "Area"].sum(skipna=True)
+    si_sum = df.loc[df["Category"] == "Si peak", "Area"].sum(skipna=True)
+    nodata_sum = df.loc[df["Category"] == "No data", "Area"].sum(skipna=True)
+
+    recalc_sum = area_sum - (air_sum + si_sum + nodata_sum)
+
+    df["Area %"] = np.nan
+    if area_sum > 0:
+        df["Area %"] = (df["Area"] / area_sum) * 100
+
+    df["Recalc %"] = np.nan
+    if recalc_sum > 0:
+        rel_mask = df["Category"] == "Relevant"
+        df.loc[rel_mask, "Recalc %"] = (df.loc[rel_mask, "Area"] / recalc_sum) * 100
+        recalc_total = df.loc[rel_mask, "Recalc %"].sum(skipna=True)
+        diff_100 = recalc_total - 100
+    else:
+        recalc_total = np.nan
+        diff_100 = np.nan
+
+    summary = {
+        "Area sum": area_sum,
+        "Air peak sum": air_sum,
+        "Si peak sum": si_sum,
+        "No data sum": nodata_sum,
+        "Recalc sum": recalc_sum,
+        "Recalc % total": recalc_total,
+        "Difference from 100%": diff_100,
+    }
+
+    return df, summary
+
+# ---------- Main ----------
 if calc:
     try:
         df = parse_tsv(raw)
@@ -173,20 +174,19 @@ if calc:
         if not np.isnan(summary["Recalc % total"]):
             status = "✅ OK" if abs(summary["Difference from 100%"]) < 0.01 else "⚠️ Check"
             st.info(
-                f"Recalc % total (Relevant only): "
-                f"{summary['Recalc % total']:.6f}%  \n"
+                f"Recalc % total (Relevant only): {summary['Recalc % total']:.6f}%  \n"
                 f"Difference from 100%: {summary['Difference from 100%']:.6f} ({status})"
             )
         else:
-            st.warning("Recalc % could not be computed.")
+            st.warning(
+                "Recalc % could not be computed because recalc sum is ≤ 0. "
+                "This usually means Air / Si / No-data peaks dominate the Area."
+            )
 
         st.divider()
         st.subheader("Cleaned Output Table")
 
-        show_excluded = st.toggle(
-            "Show excluded peaks (Air / Si / No data)",
-            value=False,
-        )
+        show_excluded = st.toggle("Show excluded peaks (Air / Si / No data)", value=False)
 
         out_cols = [
             "Peak", "RT", "Area", "Height",
@@ -206,29 +206,24 @@ if calc:
             "Name", "Formula", "Species", "Score"
         ]
 
+        # Display formatting for UI only
         display_df = out[display_cols].copy()
         for c in ["RT", "Area", "Height", "Score"]:
-            display_df[c] = display_df[c].apply(
-                lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}"
-            )
+            display_df[c] = display_df[c].apply(lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}")
         for c in ["Area %", "Recalc %"]:
-            display_df[c] = display_df[c].apply(
-                lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}"
-            )
+            display_df[c] = display_df[c].apply(lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}")
 
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-        # =========================
         # Copy / Download block
-        # =========================
         st.subheader("Copy / Download")
 
         tsv_text = out[display_cols].to_csv(index=False, sep="\t")
 
-        c1, c2 = st.columns(2)
-        with c1:
+        b1, b2 = st.columns(2)
+        with b1:
             copy_to_clipboard_button(tsv_text, label="🗒️ Copy")
-        with c2:
+        with b2:
             csv_bytes = out[display_cols].to_csv(index=False).encode("utf-8")
             st.download_button(
                 "⤵ Download",
