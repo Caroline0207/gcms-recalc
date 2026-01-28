@@ -2,6 +2,7 @@ import io
 import pandas as pd
 import numpy as np
 import streamlit as st
+import streamlit.components.v1 as components
 
 st.set_page_config(page_title="GC-MS Data Cleaning", layout="wide")
 
@@ -118,6 +119,33 @@ def compute(df: pd.DataFrame):
 
     return df, summary
 
+def copy_to_clipboard_button(text: str, label: str = "Copy to clipboard"):
+    """
+    Renders a button that copies `text` to clipboard using browser JS.
+    """
+    safe_text = text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+    html = f"""
+    <button style="
+        padding:0.45rem 0.8rem;
+        border-radius:0.5rem;
+        border:1px solid rgba(49, 51, 63, 0.2);
+        background:white;
+        cursor:pointer;
+        font-size:0.9rem;
+    " onclick="navigator.clipboard.writeText(`{safe_text}`).then(() => {{
+        const el = document.getElementById('copy-status');
+        if (el) {{
+            el.textContent = '✅ Copied!';
+            setTimeout(() => el.textContent = '', 1500);
+        }}
+    }});">
+        {label}
+    </button>
+    <span id="copy-status" style="margin-left:0.6rem;font-size:0.9rem;"></span>
+    """
+    components.html(html, height=40)
+
+
 # ---------- Main ----------
 if calc:
     try:
@@ -184,14 +212,23 @@ if calc:
 
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-        st.subheader("Export")
-        csv = out[display_cols].to_csv(index=False).encode("utf-8")
-        st.download_button(
-            "Download CSV",
-            csv,
-            file_name="gcms_recalc_cleaned.csv",
-            mime="text/csv",
-        )
+        st.subheader("Copy")
+
+# TSV is best for Excel paste (keeps columns nicely)
+tsv_text = out[display_cols].to_csv(index=False, sep="\t")
+
+copy_to_clipboard_button(tsv_text, label="📋 Copy table (TSV, incl. header)")
+
+# (optional) keep download too, if you still want it
+with st.expander("Optional: Download file"):
+    csv = out[display_cols].to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "Download CSV",
+        csv,
+        file_name="gcms_recalc_cleaned.csv",
+        mime="text/csv",
+    )
+
 
     except Exception as e:
         st.error(str(e))
