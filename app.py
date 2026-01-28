@@ -4,24 +4,29 @@ import numpy as np
 import streamlit as st
 import streamlit.components.v1 as components
 
+# =========================
+# Page config
+# =========================
 st.set_page_config(page_title="GC-MS Data Cleaning", layout="wide")
 
 REQUIRED_COLS = ["Peak", "RT", "Area", "Height", "Name", "Formula", "Species", "Score"]
 
 st.title("GC-MS Data Cleaning 🫧")
-ANALYSIS_APP_URL = "https://gcms-analyze-gm8cqhckpwmym6caacqkqn.streamlit.app/"
 
+ANALYSIS_APP_URL = "https://gcms-analyze-gm8cqhckpwmym6caacqkqn.streamlit.app/"
 with st.sidebar:
     st.markdown("### Navigation")
     st.link_button("🧪 Go to Analysis Web", ANALYSIS_APP_URL)
 
 st.caption(
     "Paste an Excel table (tab-separated) below. "
-    "The app will calculate Area sums, exclude Air/Si/No-data peaks, "
-    "recalculate area percentages, and validate that Recalc % sums to 100."
+    "The app calculates Area sums, excludes Air/Si/No-data peaks, "
+    "recalculates area percentages, and validates that Recalc % sums to 100."
 )
 
-# ---------- UI ----------
+# =========================
+# UI inputs
+# =========================
 calc = st.button("Calculate", type="primary")
 
 raw = st.text_area(
@@ -30,7 +35,9 @@ raw = st.text_area(
     placeholder="Paste tab-separated data copied directly from Excel…",
 )
 
-# ---------- Helpers ----------
+# =========================
+# Helpers
+# =========================
 def _coerce_number(series: pd.Series) -> pd.Series:
     s = series.astype(str).str.replace(",", "", regex=False).str.strip()
     s = s.replace({"": np.nan, "None": np.nan, "nan": np.nan})
@@ -40,11 +47,7 @@ def parse_tsv(text: str) -> pd.DataFrame:
     if not text or not text.strip():
         raise ValueError("Input is empty. Please paste a table copied from Excel.")
 
-    try:
-        df = pd.read_csv(io.StringIO(text.strip()), sep="\t", dtype=str, engine="python")
-    except Exception as e:
-        raise ValueError(f"Failed to parse TSV input: {e}")
-
+    df = pd.read_csv(io.StringIO(text.strip()), sep="\t", dtype=str, engine="python")
     df.columns = [c.strip() for c in df.columns]
 
     missing = [c for c in REQUIRED_COLS if c not in df.columns]
@@ -99,9 +102,9 @@ def compute(df: pd.DataFrame):
 
     df["Recalc %"] = np.nan
     if recalc_sum > 0:
-        rel_mask = df["Category"] == "Relevant"
-        df.loc[rel_mask, "Recalc %"] = (df.loc[rel_mask, "Area"] / recalc_sum) * 100
-        recalc_total = df.loc[rel_mask, "Recalc %"].sum(skipna=True)
+        rel = df["Category"] == "Relevant"
+        df.loc[rel, "Recalc %"] = (df.loc[rel, "Area"] / recalc_sum) * 100
+        recalc_total = df.loc[rel, "Recalc %"].sum(skipna=True)
         diff_100 = recalc_total - 100
     else:
         recalc_total = np.nan
@@ -119,34 +122,41 @@ def compute(df: pd.DataFrame):
 
     return df, summary
 
-def copy_to_clipboard_button(text: str, label: str = "Copy to clipboard"):
-    """
-    Renders a button that copies `text` to clipboard using browser JS.
-    """
-    safe_text = text.replace("\\", "\\\\").replace("`", "\\`").replace("${", "\\${")
+# =========================
+# Copy helper (JS clipboard)
+# =========================
+def copy_to_clipboard_button(text: str, label: str = "🗒️ Copy"):
+    safe_text = (
+        text.replace("\\", "\\\\")
+            .replace("`", "\\`")
+            .replace("${", "\\${")
+    )
     html = f"""
     <button style="
-        padding:0.45rem 0.8rem;
-        border-radius:0.5rem;
-        border:1px solid rgba(49, 51, 63, 0.2);
+        width:100%;
+        padding:0.6rem 1rem;
+        border-radius:0.75rem;
+        border:1px solid rgba(49, 51, 63, 0.25);
         background:white;
         cursor:pointer;
-        font-size:0.9rem;
+        font-size:0.95rem;
+        font-weight:600;
     " onclick="navigator.clipboard.writeText(`{safe_text}`).then(() => {{
         const el = document.getElementById('copy-status');
         if (el) {{
-            el.textContent = '✅ Copied!';
-            setTimeout(() => el.textContent = '', 1500);
+            el.innerText = 'Copied!';
+            setTimeout(() => el.innerText = '', 1200);
         }}
     }});">
         {label}
     </button>
-    <span id="copy-status" style="margin-left:0.6rem;font-size:0.9rem;"></span>
+    <div id="copy-status" style="margin-top:0.4rem;font-size:0.85rem;opacity:0.7;"></div>
     """
-    components.html(html, height=40)
+    components.html(html, height=90)
 
-
-# ---------- Main ----------
+# =========================
+# Main logic
+# =========================
 if calc:
     try:
         df = parse_tsv(raw)
@@ -168,10 +178,7 @@ if calc:
                 f"Difference from 100%: {summary['Difference from 100%']:.6f} ({status})"
             )
         else:
-            st.warning(
-                "Recalc % could not be computed because recalc sum is ≤ 0. "
-                "This usually means Air / Si / No-data peaks dominate the Area."
-            )
+            st.warning("Recalc % could not be computed.")
 
         st.divider()
         st.subheader("Cleaned Output Table")
@@ -211,23 +218,24 @@ if calc:
 
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
-        # ---------- Copy section ----------
-        st.subheader("Copy")
+        # =========================
+        # Copy / Download block
+        # =========================
+        st.subheader("Copy / Download")
 
         tsv_text = out[display_cols].to_csv(index=False, sep="\t")
-        copy_to_clipboard_button(
-            tsv_text,
-            label="📋 Copy table (TSV, incl. header)"
-        )
 
-        # Optional download
-        with st.expander("Optional: Download file"):
-            csv = out[display_cols].to_csv(index=False).encode("utf-8")
+        c1, c2 = st.columns(2)
+        with c1:
+            copy_to_clipboard_button(tsv_text, label="🗒️ Copy")
+        with c2:
+            csv_bytes = out[display_cols].to_csv(index=False).encode("utf-8")
             st.download_button(
-                "Download CSV",
-                csv,
+                "⤵ Download",
+                csv_bytes,
                 file_name="gcms_recalc_cleaned.csv",
                 mime="text/csv",
+                use_container_width=True,
             )
 
     except Exception as e:
