@@ -153,7 +153,6 @@ if calc:
         df_calc, summary = compute(df)
 
         st.subheader("Summary")
-
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Area sum", f"{summary['Area sum']:,.2f}")
         c2.metric("Air peak sum", f"{summary['Air peak sum']:,.2f}")
@@ -212,23 +211,24 @@ if calc:
 
         st.dataframe(display_df, use_container_width=True, hide_index=True)
 
+        # ---------- Copy section ----------
         st.subheader("Copy")
 
-# TSV is best for Excel paste (keeps columns nicely)
-tsv_text = out[display_cols].to_csv(index=False, sep="\t")
+        tsv_text = out[display_cols].to_csv(index=False, sep="\t")
+        copy_to_clipboard_button(
+            tsv_text,
+            label="📋 Copy table (TSV, incl. header)"
+        )
 
-copy_to_clipboard_button(tsv_text, label="📋 Copy table (TSV, incl. header)")
-
-# (optional) keep download too, if you still want it
-with st.expander("Optional: Download file"):
-    csv = out[display_cols].to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Download CSV",
-        csv,
-        file_name="gcms_recalc_cleaned.csv",
-        mime="text/csv",
-    )
-
+        # Optional download
+        with st.expander("Optional: Download file"):
+            csv = out[display_cols].to_csv(index=False).encode("utf-8")
+            st.download_button(
+                "Download CSV",
+                csv,
+                file_name="gcms_recalc_cleaned.csv",
+                mime="text/csv",
+            )
 
     except Exception as e:
         st.error(str(e))
