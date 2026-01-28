@@ -8,6 +8,12 @@ st.set_page_config(page_title="GC-MS Data Cleaning", layout="wide")
 REQUIRED_COLS = ["Peak", "RT", "Area", "Height", "Name", "Formula", "Species", "Score"]
 
 st.title("GC-MS Data Cleaning 🫧")
+ANALYSIS_APP_URL = "https://gcms-analyze-gm8cqhckpwmym6caacqkqn.streamlit.app/"
+
+with st.sidebar:
+    st.markdown("### Navigation")
+    st.link_button("🧪 Go to Analysis Web", ANALYSIS_APP_URL)
+
 st.caption(
     "Paste an Excel table (tab-separated) below. "
     "The app will calculate Area sums, exclude Air/Si/No-data peaks, "
