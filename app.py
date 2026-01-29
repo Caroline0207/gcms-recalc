@@ -111,8 +111,16 @@ def classify_rows(df: pd.DataFrame) -> pd.DataFrame:
     # 2) If Formula contains Si => Si peak (but not if it's air peak)
     si_mask = (~air_mask) & formula.str.contains("si", case=False, na=False)
 
-    # 3) If Formula is empty => No data (but not if air or si)
-    nodata_mask = (~air_mask) & (~si_mask) & (formula == "")
+    # 3) If Formula is empty OR literally "Formula" => No data
+    nodata_mask = (
+        (~air_mask)
+        & (~si_mask)
+        & (
+            (formula == "")
+            | (formula.str.lower() == "formula")
+        )
+    )
+
 
     category.loc[nodata_mask] = "No data"
     category.loc[si_mask] = "Si peak"
