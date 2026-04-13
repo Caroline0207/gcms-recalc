@@ -224,7 +224,7 @@ def get_duplicate_name_groups(df: pd.DataFrame) -> dict:
 
     return groups
 
-def render_duplicate_selector(df: pd.DataFrame) -> set:
+def render_duplicate_selector(df: pd.DataFrame, mode: str) -> set:
     selected_duplicate_peaks = set()
     dup_groups = get_duplicate_name_groups(df)
 
@@ -232,11 +232,17 @@ def render_duplicate_selector(df: pd.DataFrame) -> set:
         return selected_duplicate_peaks
 
     st.subheader("Resolve duplicate compound names")
-    st.caption(
-        "The same compound name appears more than once. "
-        "A recommended peak is pre-selected based on highest Score, then highest Area. "
-        "You can keep only the recommended peak or manually select additional peaks."
-    )
+
+    if mode == "Manual selection":
+        st.caption(
+            "The same compound name appears more than once. "
+            "All peaks are pre-selected so you can manually remove the ones you do not want."
+        )
+    else:
+        st.caption(
+            "The same compound name appears more than once. "
+            "A recommended peak is pre-selected based on highest Score, then highest Area."
+        )
 
     for norm_name, grp in dup_groups.items():
         display_name = grp["Name"].iloc[0]
@@ -269,14 +275,17 @@ def render_duplicate_selector(df: pd.DataFrame) -> set:
 
                 options.append((label, peak_val))
 
-                if peak_val == best_peak:
-                    default_options.append(label)
+                if mode == "Manual selection":
+                    default_options.append(label)   # manual = all selected
+                else:
+                    if peak_val == best_peak:
+                        default_options.append(label)  # recommended only
 
             selected_labels = st.multiselect(
                 f"Choose peaks to keep for {display_name}",
                 options=[x[0] for x in options],
                 default=default_options,
-                key=f"dup_select_{norm_name}"
+                key=f"dup_select_{mode}_{norm_name}"   # mode 포함해서 상태 분리
             )
 
             label_to_peak = {label: peak for label, peak in options}
@@ -288,7 +297,6 @@ def render_duplicate_selector(df: pd.DataFrame) -> set:
             selected_duplicate_peaks.update(selected_peaks_here)
 
     return selected_duplicate_peaks
-
 def apply_duplicate_selection(df: pd.DataFrame, mode: str, selected_peaks: set = None) -> pd.DataFrame:
     out = df.copy()
     dup_groups = get_duplicate_name_groups(out)
@@ -583,7 +591,7 @@ if st.session_state.df_calc is not None and st.session_state.summary is not None
 
     selected_duplicate_peaks = None
     if duplicate_groups and duplicate_mode == "Manual selection":
-        selected_duplicate_peaks = render_duplicate_selector(out)
+        selected_duplicate_peaks = render_duplicate_selector(out, duplicate_mode)
 
     out = apply_duplicate_selection(
         out,
