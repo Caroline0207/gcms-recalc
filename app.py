@@ -114,6 +114,12 @@ def is_suspicious_contamination_row(name: str, formula: str, species: str) -> bo
         "ethylene glycol di-n-butyrate",
         "acetic acid, 3-acetoxy-1-ethyl-2-nitrobutyl ester",
         "4-ethylbenzoic acid, 2-ethylcyclohexyl ester",
+        "2,2,3,4-tetramethyl-5-phenyloxazolidine",
+        "benzene, hexamethyl-",
+        "3-nonen-5-yne, 4-ethyl-",
+        "1,3-cyclopentadiene, 1,2,3,4,5-pentamethyl-",
+        "1h-3a,7-methanoazulene",
+        "14-hydroxycaryophyllene",
     ]
     if any(x in name for x in exact_suspicious_names):
         return True
@@ -123,6 +129,10 @@ def is_suspicious_contamination_row(name: str, formula: str, species: str) -> bo
         "ageratriol",
         "cyclooctatin",
         "parthenolide",
+        "methanoazulene",
+        "neointermedeol",
+        "hydroxycaryophyllene",
+        "oxazolidine",
     ]
     if any(x in combined for x in suspicious_keywords):
         return True
@@ -137,8 +147,8 @@ def is_suspicious_contamination_row(name: str, formula: str, species: str) -> bo
     if ("BR" in formula_upper) or ("CL" in formula_upper):
         return True
 
-    # Nitro / aniline-like
-    if "nitro" in combined or "anilino" in combined:
+    # Nitro / aniline-like / unlikely N-containing cyclic adducts
+    if "nitro" in combined or "anilino" in combined or "oxazolidine" in combined:
         return True
 
     # Weird deuterium-containing formula like C15H21DO
@@ -163,6 +173,22 @@ def suspicious_reason(name: str, formula: str, species: str) -> str:
         return "Nitro-containing match; implausible for hydrolat"
     if "4-ethylbenzoic acid, 2-ethylcyclohexyl ester" in name_l:
         return "Likely plastic/material contamination"
+    if "2,2,3,4-tetramethyl-5-phenyloxazolidine" in name_l:
+        return "Implausible N-containing cyclic compound for hydrolat"
+    if "benzene, hexamethyl-" in name_l:
+        return "Unlikely aromatic hydrocarbon; probable artifact/mis-ID"
+    if "3-nonen-5-yne, 4-ethyl-" in name_l:
+        return "Implausible hydrocarbon match for hydrolat"
+    if "1,3-cyclopentadiene, 1,2,3,4,5-pentamethyl-" in name_l:
+        return "Likely artifact / implausible fully methylated hydrocarbon"
+    if "1h-3a,7-methanoazulene" in name_l or "methanoazulene" in combined:
+        return "Unstable sesquiterpene-type library match"
+    if "14-hydroxycaryophyllene" in combined or "hydroxycaryophyllene" in combined:
+        return "Late RT oxygenated sesquiterpene; likely misidentification"
+    if "neointermedeol" in combined:
+        return "Unstable sesquiterpene-type library match"
+    if "oxazolidine" in combined:
+        return "Implausible N-containing cyclic compound for hydrolat"
     if "ageratriol" in combined or "cyclooctatin" in combined or "parthenolide" in combined:
         return "Unstable / implausible library match"
     if "bromo" in combined or "chloro" in combined or "fluoro" in combined or "iodo" in combined:
@@ -176,7 +202,6 @@ def suspicious_reason(name: str, formula: str, species: str) -> str:
     if re.search(r"\dD\d|\dD$|[A-Z]D\d", formula_l.upper()):
         return "Deuterium-containing formula; likely library confusion"
     return ""
-
 def classify_rows(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
