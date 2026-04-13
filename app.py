@@ -21,14 +21,14 @@ st.caption(
     "Paste an Excel table (tab-separated) below. "
     "The app calculates Area sums, excludes Air/Si/No-data peaks, "
     "can optionally exclude suspicious contamination peaks, "
-    "and lets you manually resolve duplicate compound names."
+    "and helps resolve duplicate compound names."
 )
 
 # ---------- UI ----------
 exclude_suspicious = st.checkbox(
     "Exclude obvious suspicious contamination / misidentification peaks",
     value=True,
-    help="Examples: brominated compounds, nitro-containing compounds, anilino compounds, clear plasticizer-like compounds, and unstable library matches such as Ageratriol/Cyclooctatin-type IDs."
+    help="Examples: brominated compounds, nitro-containing compounds, anilino compounds, clear plasticizer-like compounds, and unstable library matches."
 )
 
 duplicate_rt_threshold = st.number_input(
@@ -37,7 +37,23 @@ duplicate_rt_threshold = st.number_input(
     max_value=5.0,
     value=0.30,
     step=0.05,
-    help="If the same Name appears with RT spread larger than this value, it will be flagged as a possible duplicate / RT mismatch."
+    help="This only affects warning flags, not which duplicate groups appear."
+)
+
+duplicate_mode = st.radio(
+    "Duplicate handling mode",
+    ["Recommended only", "Keep all duplicates", "Manual selection"],
+    index=0,
+    help=(
+        "Recommended only: keep the best peak in each duplicate-name group "
+        "(highest Score, then highest Area). "
+        "Keep all duplicates: do not remove duplicate-name peaks. "
+        "Manual selection: choose peaks yourself."
+    )
+)
+
+st.caption(
+    "RT threshold only affects warning flags. Duplicate handling mode controls what is kept in the final cleaned table."
 )
 
 calc = st.button("Calculate", type="primary")
@@ -119,10 +135,28 @@ def parse_tsv(text: str) -> pd.DataFrame:
 
     return df
 
+def choose_best_duplicate_peak(group: pd.DataFrame):
+    """
+    Choose the best representative peak within a duplicate-name group.
+    Priority:
+    1) higher Score
+    2) higher Area
+    3) lower RT
+    """
+    g = group.copy()
+
+    g["Score_sort"] = pd.to_numeric(g["Score"], errors="coerce").fillna(-1)
+    g["Area_sort"] = pd.to_numeric(g["Area"], errors="coerce").fillna(-1)
+    g["RT_sort"] = pd.to_numeric(g["RT"], errors="coerce").fillna(np.inf)
+
+    g = g.sort_values(
+        by=["Score_sort", "Area_sort", "RT_sort"],
+        ascending=[False, False, True]
+    )
+
+    return g.iloc[0]["Peak"]
+
 def flag_name_rt_duplicates(df: pd.DataFrame, rt_threshold: float = 0.3) -> pd.DataFrame:
-    """
-    Flag rows where the same compound name appears at clearly different RTs.
-    """
     out = df.copy()
 
     if "Name" not in out.columns or "RT" not in out.columns:
@@ -191,11 +225,6 @@ def get_duplicate_name_groups(df: pd.DataFrame) -> dict:
     return groups
 
 def render_duplicate_selector(df: pd.DataFrame) -> set:
-    """
-    Show UI for duplicate-name groups and return the set of Peak values selected by the user.
-    Non-duplicate rows are not affected.
-    Duplicate rows default to all selected.
-    """
     selected_duplicate_peaks = set()
     dup_groups = get_duplicate_name_groups(df)
 
@@ -205,11 +234,13 @@ def render_duplicate_selector(df: pd.DataFrame) -> set:
     st.subheader("Resolve duplicate compound names")
     st.caption(
         "The same compound name appears more than once. "
-        "Choose which peaks you want to keep in the final cleaned table."
+        "A recommended peak is pre-selected based on highest Score, then highest Area. "
+        "You can keep only the recommended peak or manually select additional peaks."
     )
 
     for norm_name, grp in dup_groups.items():
         display_name = grp["Name"].iloc[0]
+        best_peak = choose_best_duplicate_peak(grp)
 
         with st.expander(f"{display_name} ({len(grp)} peaks)"):
             options = []
@@ -228,14 +259,18 @@ def render_duplicate_selector(df: pd.DataFrame) -> set:
                 area_text = "—" if pd.isna(area_val) else f"{float(area_val):,.0f}"
                 score_text = "—" if pd.isna(score_val) else f"{float(score_val):.2f}"
 
+                recommended_tag = " ⭐ Recommended" if peak_val == best_peak else ""
+
                 label = (
                     f"Peak {peak_text} | RT {rt_text} | "
                     f"Area {area_text} | Score {score_text} | "
-                    f"Formula {formula_val} | Species {species_val}"
+                    f"Formula {formula_val} | Species {species_val}{recommended_tag}"
                 )
 
                 options.append((label, peak_val))
-                default_options.append(label)
+
+                if peak_val == best_peak:
+                    default_options.append(label)
 
             selected_labels = st.multiselect(
                 f"Choose peaks to keep for {display_name}",
@@ -254,36 +289,39 @@ def render_duplicate_selector(df: pd.DataFrame) -> set:
 
     return selected_duplicate_peaks
 
-def apply_duplicate_selection(df: pd.DataFrame, selected_duplicate_peaks: set) -> pd.DataFrame:
-    """
-    For duplicate names, keep only user-selected peaks.
-    For non-duplicate names, keep all rows.
-    """
+def apply_duplicate_selection(df: pd.DataFrame, mode: str, selected_peaks: set = None) -> pd.DataFrame:
     out = df.copy()
+    dup_groups = get_duplicate_name_groups(out)
 
-    temp = out.copy()
-    temp["_norm_name"] = (
-        temp["Name"]
-        .fillna("")
-        .astype(str)
-        .str.strip()
-        .str.lower()
-    )
+    if not dup_groups:
+        return out
 
-    counts = temp["_norm_name"].value_counts()
-    dup_names = set(counts[counts > 1].index.tolist())
+    keep_peaks = set()
 
-    def keep_row(row):
-        nm = str(row.get("Name", "")).strip().lower()
-        peak = row.get("Peak", pd.NA)
+    for _, grp in dup_groups.items():
+        if mode == "Keep all duplicates":
+            keep_peaks.update(grp["Peak"].dropna().tolist())
 
-        if nm in dup_names:
-            return peak in selected_duplicate_peaks
-        return True
+        elif mode == "Recommended only":
+            best_peak = choose_best_duplicate_peak(grp)
+            keep_peaks.add(best_peak)
 
-    mask = out.apply(keep_row, axis=1)
-    out = out[mask].copy()
-    return out
+        elif mode == "Manual selection":
+            if selected_peaks:
+                keep_peaks.update(selected_peaks)
+
+    duplicate_peaks_all = set()
+    for grp in dup_groups.values():
+        duplicate_peaks_all.update(grp["Peak"].dropna().tolist())
+
+    non_duplicate_mask = ~out["Peak"].isin(duplicate_peaks_all)
+
+    final = pd.concat([
+        out[non_duplicate_mask],
+        out[out["Peak"].isin(keep_peaks)]
+    ])
+
+    return final
 
 def is_suspicious_contamination_row(name: str, formula: str, species: str) -> bool:
     name = "" if pd.isna(name) else str(name).strip().lower()
@@ -542,9 +580,16 @@ if st.session_state.df_calc is not None and st.session_state.summary is not None
         out = out[~out["Category"].isin(summary["Excluded categories"])]
 
     duplicate_groups = get_duplicate_name_groups(out)
-    if duplicate_groups:
+
+    selected_duplicate_peaks = None
+    if duplicate_groups and duplicate_mode == "Manual selection":
         selected_duplicate_peaks = render_duplicate_selector(out)
-        out = apply_duplicate_selection(out, selected_duplicate_peaks)
+
+    out = apply_duplicate_selection(
+        out,
+        mode=duplicate_mode,
+        selected_peaks=selected_duplicate_peaks
+    )
 
     out = out.sort_values(by="Recalc %", ascending=False, na_position="last")
 
