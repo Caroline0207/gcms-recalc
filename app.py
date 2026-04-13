@@ -20,7 +20,8 @@ with st.sidebar:
 st.caption(
     "Paste an Excel table (tab-separated) below. "
     "The app calculates Area sums, excludes Air/Si/No-data peaks, "
-    "and can optionally exclude suspicious contamination peaks."
+    "can optionally exclude suspicious contamination peaks, "
+    "and lets you manually resolve duplicate compound names."
 )
 
 # ---------- UI ----------
@@ -28,6 +29,15 @@ exclude_suspicious = st.checkbox(
     "Exclude obvious suspicious contamination / misidentification peaks",
     value=True,
     help="Examples: brominated compounds, nitro-containing compounds, anilino compounds, clear plasticizer-like compounds, and unstable library matches such as Ageratriol/Cyclooctatin-type IDs."
+)
+
+duplicate_rt_threshold = st.number_input(
+    "RT threshold for duplicate-name flagging",
+    min_value=0.05,
+    max_value=5.0,
+    value=0.30,
+    step=0.05,
+    help="If the same Name appears with RT spread larger than this value, it will be flagged as a possible duplicate / RT mismatch."
 )
 
 calc = st.button("Calculate", type="primary")
@@ -100,6 +110,172 @@ def parse_tsv(text: str) -> pd.DataFrame:
 
     return df
 
+def flag_name_rt_duplicates(df: pd.DataFrame, rt_threshold: float = 0.3) -> pd.DataFrame:
+    """
+    Flag rows where the same compound name appears at clearly different RTs.
+    """
+    out = df.copy()
+
+    if "Name" not in out.columns or "RT" not in out.columns:
+        out["Duplicate Name Flag"] = ""
+        out["Duplicate Group RT Range"] = ""
+        out["Same Name Count"] = 1
+        return out
+
+    out["Duplicate Name Flag"] = ""
+    out["Duplicate Group RT Range"] = ""
+
+    norm_name = (
+        out["Name"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    out["_norm_name_tmp"] = norm_name
+
+    name_counts = out["_norm_name_tmp"].value_counts()
+    out["Same Name Count"] = out["_norm_name_tmp"].map(name_counts).fillna(0).astype(int)
+
+    valid = out[out["_norm_name_tmp"] != ""].copy()
+
+    for _, group in valid.groupby("_norm_name_tmp"):
+        if len(group) < 2:
+            continue
+
+        rts = group["RT"].dropna().sort_values()
+        if len(rts) < 2:
+            continue
+
+        rt_min = rts.min()
+        rt_max = rts.max()
+        rt_range = rt_max - rt_min
+
+        if rt_range > rt_threshold:
+            idx = group.index
+            out.loc[idx, "Duplicate Name Flag"] = "Possible duplicate / RT mismatch"
+            out.loc[idx, "Duplicate Group RT Range"] = f"{rt_min:.3f}–{rt_max:.3f}"
+
+    out = out.drop(columns=["_norm_name_tmp"], errors="ignore")
+    return out
+
+def get_duplicate_name_groups(df: pd.DataFrame) -> dict:
+    temp = df.copy()
+    temp["_norm_name"] = (
+        temp["Name"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    temp = temp[temp["_norm_name"] != ""]
+    counts = temp["_norm_name"].value_counts()
+    dup_names = counts[counts > 1].index.tolist()
+
+    groups = {}
+    for nm in dup_names:
+        grp = temp[temp["_norm_name"] == nm].copy().sort_values("RT", ascending=True)
+        groups[nm] = grp
+
+    return groups
+
+def render_duplicate_selector(df: pd.DataFrame) -> set:
+    """
+    Show UI for duplicate-name groups and return the set of Peak values selected by the user.
+    Non-duplicate rows are not affected.
+    Duplicate rows default to all selected.
+    """
+    selected_duplicate_peaks = set()
+    dup_groups = get_duplicate_name_groups(df)
+
+    if not dup_groups:
+        return selected_duplicate_peaks
+
+    st.subheader("Resolve duplicate compound names")
+    st.caption(
+        "The same compound name appears more than once. "
+        "Choose which peaks you want to keep in the final cleaned table."
+    )
+
+    for norm_name, grp in dup_groups.items():
+        display_name = grp["Name"].iloc[0]
+
+        with st.expander(f"{display_name} ({len(grp)} peaks)"):
+            options = []
+            default_options = []
+
+            for _, row in grp.iterrows():
+                peak_val = row["Peak"]
+                rt_val = row["RT"]
+                area_val = row["Area"]
+                score_val = row["Score"]
+                formula_val = row["Formula"]
+                species_val = row["Species"]
+
+                peak_text = "—" if pd.isna(peak_val) else str(int(peak_val))
+                rt_text = "—" if pd.isna(rt_val) else f"{float(rt_val):.3f}"
+                area_text = "—" if pd.isna(area_val) else f"{float(area_val):,.0f}"
+                score_text = "—" if pd.isna(score_val) else f"{float(score_val):.2f}"
+
+                label = (
+                    f"Peak {peak_text} | RT {rt_text} | "
+                    f"Area {area_text} | Score {score_text} | "
+                    f"Formula {formula_val} | Species {species_val}"
+                )
+
+                options.append((label, peak_val))
+                default_options.append(label)
+
+            selected_labels = st.multiselect(
+                f"Choose peaks to keep for {display_name}",
+                options=[x[0] for x in options],
+                default=default_options,
+                key=f"dup_select_{norm_name}"
+            )
+
+            label_to_peak = {label: peak for label, peak in options}
+            selected_peaks_here = {
+                label_to_peak[label]
+                for label in selected_labels
+                if pd.notna(label_to_peak[label])
+            }
+            selected_duplicate_peaks.update(selected_peaks_here)
+
+    return selected_duplicate_peaks
+
+def apply_duplicate_selection(df: pd.DataFrame, selected_duplicate_peaks: set) -> pd.DataFrame:
+    """
+    For duplicate names, keep only user-selected peaks.
+    For non-duplicate names, keep all rows.
+    """
+    out = df.copy()
+
+    temp = out.copy()
+    temp["_norm_name"] = (
+        temp["Name"]
+        .fillna("")
+        .astype(str)
+        .str.strip()
+        .str.lower()
+    )
+
+    counts = temp["_norm_name"].value_counts()
+    dup_names = set(counts[counts > 1].index.tolist())
+
+    def keep_row(row):
+        nm = str(row.get("Name", "")).strip().lower()
+        peak = row.get("Peak", pd.NA)
+
+        if nm in dup_names:
+            return peak in selected_duplicate_peaks
+        return True
+
+    mask = out.apply(keep_row, axis=1)
+    out = out[mask].copy()
+    return out
+
 def is_suspicious_contamination_row(name: str, formula: str, species: str) -> bool:
     name = "" if pd.isna(name) else str(name).strip().lower()
     formula = "" if pd.isna(formula) else str(formula).strip().lower()
@@ -107,7 +283,6 @@ def is_suspicious_contamination_row(name: str, formula: str, species: str) -> bo
 
     combined = f"{name} {species} {formula}"
 
-    # Exact suspicious matches seen in your data
     exact_suspicious_names = [
         "4-anilino-2-methyl-2-pentanol",
         "2-adamantanol, 2-(bromomethyl)-",
@@ -124,7 +299,6 @@ def is_suspicious_contamination_row(name: str, formula: str, species: str) -> bo
     if any(x in name for x in exact_suspicious_names):
         return True
 
-    # Known unstable / implausible library-match family
     suspicious_keywords = [
         "ageratriol",
         "cyclooctatin",
@@ -137,21 +311,17 @@ def is_suspicious_contamination_row(name: str, formula: str, species: str) -> bo
     if any(x in combined for x in suspicious_keywords):
         return True
 
-    # Halogen words in name/species
     halogen_words = ["bromo", "chloro", "fluoro", "iodo"]
     if any(x in combined for x in halogen_words):
         return True
 
-    # Actual halogens in formula
     formula_upper = formula.upper()
     if ("BR" in formula_upper) or ("CL" in formula_upper):
         return True
 
-    # Nitro / aniline-like / unlikely N-containing cyclic adducts
     if "nitro" in combined or "anilino" in combined or "oxazolidine" in combined:
         return True
 
-    # Weird deuterium-containing formula like C15H21DO
     if re.search(r"\dD\d|\dD$|[A-Z]D\d", formula.upper()):
         return True
 
@@ -202,6 +372,7 @@ def suspicious_reason(name: str, formula: str, species: str) -> str:
     if re.search(r"\dD\d|\dD$|[A-Z]D\d", formula_l.upper()):
         return "Deuterium-containing formula; likely library confusion"
     return ""
+
 def classify_rows(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
 
@@ -211,7 +382,6 @@ def classify_rows(df: pd.DataFrame) -> pd.DataFrame:
     category = pd.Series(["Relevant"] * len(out), index=out.index)
     reason = pd.Series([""] * len(out), index=out.index)
 
-    # Existing rules
     air_mask = peak == 1
     si_mask = (~air_mask) & formula.str.contains("si", case=False, na=False)
     nodata_mask = (
@@ -254,8 +424,9 @@ def classify_rows(df: pd.DataFrame) -> pd.DataFrame:
     out["Reason"] = reason
     return out
 
-def compute(df: pd.DataFrame, exclude_suspicious_flag: bool):
+def compute(df: pd.DataFrame, exclude_suspicious_flag: bool, duplicate_rt_threshold: float):
     df = classify_rows(df)
+    df = flag_name_rt_duplicates(df, rt_threshold=duplicate_rt_threshold)
 
     always_excluded = ["Air peak", "Si peak", "No data"]
     excluded_categories = always_excluded.copy()
@@ -305,7 +476,7 @@ def compute(df: pd.DataFrame, exclude_suspicious_flag: bool):
 if calc:
     try:
         df = parse_tsv(raw)
-        df_calc, summary = compute(df, exclude_suspicious)
+        df_calc, summary = compute(df, exclude_suspicious, duplicate_rt_threshold)
 
         st.subheader("Summary")
         c1, c2, c3 = st.columns(3)
@@ -336,21 +507,24 @@ if calc:
         st.divider()
         st.subheader("Cleaned Output Table")
 
-        show_excluded = st.toggle(
-            "Show excluded peaks",
-            value=False
-        )
+        show_excluded = st.toggle("Show excluded peaks", value=False)
 
         out_cols = [
             "Peak", "RT", "Area", "Height",
             "Area %", "Recalc %",
             "Name", "Formula", "Species", "Score",
-            "Category", "Reason"
+            "Category", "Reason",
+            "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
         ]
         out = df_calc[out_cols].copy()
 
         if not show_excluded:
             out = out[~out["Category"].isin(summary["Excluded categories"])]
+
+        duplicate_groups = get_duplicate_name_groups(out)
+        if duplicate_groups:
+            selected_duplicate_peaks = render_duplicate_selector(out)
+            out = apply_duplicate_selection(out, selected_duplicate_peaks)
 
         out = out.sort_values(by="Recalc %", ascending=False, na_position="last")
 
@@ -358,7 +532,8 @@ if calc:
             "Peak", "RT", "Area", "Height",
             "Area %", "Recalc %",
             "Name", "Formula", "Species", "Score",
-            "Category", "Reason"
+            "Category", "Reason",
+            "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
         ]
 
         display_df = out[display_cols].copy()
@@ -380,6 +555,21 @@ if calc:
                         lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}"
                     )
                 st.dataframe(suspicious_view, use_container_width=True, hide_index=True)
+
+        duplicate_only = df_calc[df_calc["Duplicate Name Flag"] != ""].copy()
+        if not duplicate_only.empty:
+            with st.expander("See possible duplicate-name RT mismatches"):
+                dup_view = duplicate_only[
+                    [
+                        "Peak", "RT", "Name", "Formula", "Species", "Score",
+                        "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
+                    ]
+                ].copy()
+                for c in ["RT", "Score"]:
+                    dup_view[c] = dup_view[c].apply(
+                        lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}"
+                    )
+                st.dataframe(dup_view, use_container_width=True, hide_index=True)
 
         st.subheader("Copy / Download")
 
