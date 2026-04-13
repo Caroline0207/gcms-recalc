@@ -42,6 +42,15 @@ duplicate_rt_threshold = st.number_input(
 
 calc = st.button("Calculate", type="primary")
 
+if "df_calc" not in st.session_state:
+    st.session_state.df_calc = None
+
+if "summary" not in st.session_state:
+    st.session_state.summary = None
+
+if "last_raw" not in st.session_state:
+    st.session_state.last_raw = ""
+
 raw = st.text_area(
     "Paste your Excel table here (including header row):",
     height=260,
@@ -478,122 +487,130 @@ if calc:
         df = parse_tsv(raw)
         df_calc, summary = compute(df, exclude_suspicious, duplicate_rt_threshold)
 
-        st.subheader("Summary")
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Area sum", f"{summary['Area sum']:,.2f}")
-        c2.metric("Air peak sum", f"{summary['Air peak sum']:,.2f}")
-        c3.metric("Si peak sum", f"{summary['Si peak sum']:,.2f}")
-
-        c4, c5, c6 = st.columns(3)
-        c4.metric("No data sum", f"{summary['No data sum']:,.2f}")
-        c5.metric("Suspicious sum", f"{summary['Suspicious contamination sum']:,.2f}")
-        c6.metric("Recalc sum", f"{summary['Recalc sum']:,.2f}")
-
-        excluded_text = ", ".join(summary["Excluded categories"])
-        st.caption(f"Currently excluded from Recalc %: {excluded_text}")
-
-        if not np.isnan(summary["Recalc % total"]):
-            status = "✅ OK" if abs(summary["Difference from 100%"]) < 0.01 else "⚠️ Check"
-            st.info(
-                f"Recalc % total: {summary['Recalc % total']:.6f}%  \n"
-                f"Difference from 100%: {summary['Difference from 100%']:.6f} ({status})"
-            )
-        else:
-            st.warning(
-                "Recalc % could not be computed because recalc sum is ≤ 0. "
-                "This usually means excluded peaks dominate the Area."
-            )
-
-        st.divider()
-        st.subheader("Cleaned Output Table")
-
-        show_excluded = st.toggle("Show excluded peaks", value=False)
-
-        out_cols = [
-            "Peak", "RT", "Area", "Height",
-            "Area %", "Recalc %",
-            "Name", "Formula", "Species", "Score",
-            "Category", "Reason",
-            "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
-        ]
-        out = df_calc[out_cols].copy()
-
-        if not show_excluded:
-            out = out[~out["Category"].isin(summary["Excluded categories"])]
-
-        duplicate_groups = get_duplicate_name_groups(out)
-        if duplicate_groups:
-            selected_duplicate_peaks = render_duplicate_selector(out)
-            out = apply_duplicate_selection(out, selected_duplicate_peaks)
-
-        out = out.sort_values(by="Recalc %", ascending=False, na_position="last")
-
-        display_cols = [
-            "Peak", "RT", "Area", "Height",
-            "Area %", "Recalc %",
-            "Name", "Formula", "Species", "Score",
-            "Category", "Reason",
-            "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
-        ]
-
-        display_df = out[display_cols].copy()
-        for c in ["RT", "Area", "Height", "Score"]:
-            display_df[c] = display_df[c].apply(lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}")
-        for c in ["Area %", "Recalc %"]:
-            display_df[c] = display_df[c].apply(lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}")
-
-        st.dataframe(display_df, use_container_width=True, hide_index=True)
-
-        suspicious_only = df_calc[df_calc["Category"] == "Suspicious contamination"].copy()
-        if not suspicious_only.empty:
-            with st.expander("See suspicious contamination peaks"):
-                suspicious_view = suspicious_only[
-                    ["Peak", "RT", "Name", "Formula", "Species", "Score", "Reason"]
-                ].copy()
-                for c in ["RT", "Score"]:
-                    suspicious_view[c] = suspicious_view[c].apply(
-                        lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}"
-                    )
-                st.dataframe(suspicious_view, use_container_width=True, hide_index=True)
-
-        duplicate_only = df_calc[df_calc["Duplicate Name Flag"] != ""].copy()
-        if not duplicate_only.empty:
-            with st.expander("See possible duplicate-name RT mismatches"):
-                dup_view = duplicate_only[
-                    [
-                        "Peak", "RT", "Name", "Formula", "Species", "Score",
-                        "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
-                    ]
-                ].copy()
-                for c in ["RT", "Score"]:
-                    dup_view[c] = dup_view[c].apply(
-                        lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}"
-                    )
-                st.dataframe(dup_view, use_container_width=True, hide_index=True)
-
-        st.subheader("Copy / Download")
-
-        export_cols = [
-            "Peak", "RT", "Area", "Height",
-            "Area %", "Recalc %",
-            "Name", "Formula", "Species", "Score"
-        ]
-        export_df = out[export_cols].copy()
-
-        tsv_text = export_df.to_csv(index=False, sep="\t")
-
-        b1, b2 = st.columns(2)
-        with b1:
-            copy_to_clipboard_button(tsv_text, label="🗒️ Copy")
-        with b2:
-            csv_bytes = export_df.to_csv(index=False).encode("utf-8")
-            st.download_button(
-                "⤵ Download",
-                csv_bytes,
-                file_name="gcms_recalc_cleaned.csv",
-                mime="text/csv",
-                use_container_width=True,
-            )
+        st.session_state.df_calc = df_calc
+        st.session_state.summary = summary
+        st.session_state.last_raw = raw
 
     except Exception as e:
         st.error(str(e))
+
+if st.session_state.df_calc is not None and st.session_state.summary is not None:
+    df_calc = st.session_state.df_calc
+    summary = st.session_state.summary
+
+    st.subheader("Summary")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Area sum", f"{summary['Area sum']:,.2f}")
+    c2.metric("Air peak sum", f"{summary['Air peak sum']:,.2f}")
+    c3.metric("Si peak sum", f"{summary['Si peak sum']:,.2f}")
+
+    c4, c5, c6 = st.columns(3)
+    c4.metric("No data sum", f"{summary['No data sum']:,.2f}")
+    c5.metric("Suspicious sum", f"{summary['Suspicious contamination sum']:,.2f}")
+    c6.metric("Recalc sum", f"{summary['Recalc sum']:,.2f}")
+
+    excluded_text = ", ".join(summary["Excluded categories"])
+    st.caption(f"Currently excluded from Recalc %: {excluded_text}")
+
+    if not np.isnan(summary["Recalc % total"]):
+        status = "✅ OK" if abs(summary["Difference from 100%"]) < 0.01 else "⚠️ Check"
+        st.info(
+            f"Recalc % total: {summary['Recalc % total']:.6f}%  \n"
+            f"Difference from 100%: {summary['Difference from 100%']:.6f} ({status})"
+        )
+    else:
+        st.warning(
+            "Recalc % could not be computed because recalc sum is ≤ 0. "
+            "This usually means excluded peaks dominate the Area."
+        )
+
+    st.divider()
+    st.subheader("Cleaned Output Table")
+
+    show_excluded = st.toggle("Show excluded peaks", value=False)
+
+    out_cols = [
+        "Peak", "RT", "Area", "Height",
+        "Area %", "Recalc %",
+        "Name", "Formula", "Species", "Score",
+        "Category", "Reason",
+        "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
+    ]
+    out = df_calc[out_cols].copy()
+
+    if not show_excluded:
+        out = out[~out["Category"].isin(summary["Excluded categories"])]
+
+    duplicate_groups = get_duplicate_name_groups(out)
+    if duplicate_groups:
+        selected_duplicate_peaks = render_duplicate_selector(out)
+        out = apply_duplicate_selection(out, selected_duplicate_peaks)
+
+    out = out.sort_values(by="Recalc %", ascending=False, na_position="last")
+
+    display_cols = [
+        "Peak", "RT", "Area", "Height",
+        "Area %", "Recalc %",
+        "Name", "Formula", "Species", "Score",
+        "Category", "Reason",
+        "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
+    ]
+
+    display_df = out[display_cols].copy()
+    for c in ["RT", "Area", "Height", "Score"]:
+        display_df[c] = display_df[c].apply(lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}")
+    for c in ["Area %", "Recalc %"]:
+        display_df[c] = display_df[c].apply(lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}")
+
+    st.dataframe(display_df, use_container_width=True, hide_index=True)
+
+    suspicious_only = df_calc[df_calc["Category"] == "Suspicious contamination"].copy()
+    if not suspicious_only.empty:
+        with st.expander("See suspicious contamination peaks"):
+            suspicious_view = suspicious_only[
+                ["Peak", "RT", "Name", "Formula", "Species", "Score", "Reason"]
+            ].copy()
+            for c in ["RT", "Score"]:
+                suspicious_view[c] = suspicious_view[c].apply(
+                    lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}"
+                )
+            st.dataframe(suspicious_view, use_container_width=True, hide_index=True)
+
+    duplicate_only = df_calc[df_calc["Duplicate Name Flag"] != ""].copy()
+    if not duplicate_only.empty:
+        with st.expander("See possible duplicate-name RT mismatches"):
+            dup_view = duplicate_only[
+                [
+                    "Peak", "RT", "Name", "Formula", "Species", "Score",
+                    "Duplicate Name Flag", "Duplicate Group RT Range", "Same Name Count"
+                ]
+            ].copy()
+            for c in ["RT", "Score"]:
+                dup_view[c] = dup_view[c].apply(
+                    lambda v: "—" if pd.isna(v) else f"{float(v):,.2f}"
+                )
+            st.dataframe(dup_view, use_container_width=True, hide_index=True)
+
+    st.subheader("Copy / Download")
+
+    export_cols = [
+        "Peak", "RT", "Area", "Height",
+        "Area %", "Recalc %",
+        "Name", "Formula", "Species", "Score"
+    ]
+    export_df = out[export_cols].copy()
+
+    tsv_text = export_df.to_csv(index=False, sep="\t")
+
+    b1, b2 = st.columns(2)
+    with b1:
+        copy_to_clipboard_button(tsv_text, label="🗒️ Copy")
+    with b2:
+        csv_bytes = export_df.to_csv(index=False).encode("utf-8")
+        st.download_button(
+            "⤵ Download",
+            csv_bytes,
+            file_name="gcms_recalc_cleaned.csv",
+            mime="text/csv",
+            use_container_width=True,
+        )
