@@ -544,17 +544,24 @@ if st.session_state.df_calc is not None and st.session_state.summary is not None
     df_calc = st.session_state.df_calc
     summary = st.session_state.summary
 
-    st.subheader("Summary")
+    st.subheader("Area Distribution")
+
+    area_sum = summary["Area sum"]
+
+    air_pct = summary["Air peak sum"] / area_sum * 100 if area_sum else 0
+    si_pct = summary["Si peak sum"] / area_sum * 100 if area_sum else 0
+    nodata_pct = summary["No data sum"] / area_sum * 100 if area_sum else 0
+    sus_pct = summary["Suspicious contamination sum"] / area_sum * 100 if area_sum else 0
+    recalc_pct = summary["Recalc sum"] / area_sum * 100 if area_sum else 0
+
     c1, c2, c3 = st.columns(3)
-    c1.metric("Area sum", f"{summary['Area sum']:,.2f}")
-    c2.metric("Air peak sum", f"{summary['Air peak sum']:,.2f}")
-    c3.metric("Si peak sum", f"{summary['Si peak sum']:,.2f}")
+    c1.metric("Air peak", f"{air_pct:.2f}%")
+    c2.metric("Si peak", f"{si_pct:.2f}%")
+    c3.metric("No data", f"{nodata_pct:.2f}%")
 
-    c4, c5, c6 = st.columns(3)
-    c4.metric("No data sum", f"{summary['No data sum']:,.2f}")
-    c5.metric("Suspicious sum", f"{summary['Suspicious contamination sum']:,.2f}")
-    c6.metric("Recalc sum", f"{summary['Recalc sum']:,.2f}")
-
+    c4, c5 = st.columns(2)
+    c4.metric("Suspicious", f"{sus_pct:.2f}%")
+    c5.metric("Remaining (Recalc)", f"{recalc_pct:.2f}%")
     excluded_text = ", ".join(summary["Excluded categories"])
     st.caption(f"Currently excluded from Recalc %: {excluded_text}")
 
